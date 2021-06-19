@@ -5,17 +5,21 @@ using UnityEngine;
 
 namespace Oxide.Plugins
 {
-    [Info("Persistant Corpses", "bmgjet", "1.0.0")]
+    [Info("Persistant Corpses", "bmgjet", "1.0.1")]
     [Description("Player Corpses don't despawn unless there health is 0.")]
     public class PersistantCorpses : RustPlugin
     {
         #region Vars
+        //User Editable
+        private float RefreshTimer = 6f;  
+        private int textsize = 22;
+        private Color textcolor = Color.red;
+        //Dont change below
         private const string permClean = "PersistantCorpses.clean";
         private const string permCount = "PersistantCorpses.count";
         private const string permView = "PersistantCorpses.view";
         private BasePlayer player;
         private Coroutine _routine;
-        private float RefreshTimer = 6f;
         private Dictionary<BaseNetworkable, Vector3> Corpses = new Dictionary<BaseNetworkable, Vector3> { };
         #endregion
 
@@ -26,8 +30,8 @@ namespace Oxide.Plugins
             {
             {"Info", "There are {0} corpses on map!"},
             {"Clean", "{0} corpses have been removed from the map!"},
-            {"Stop", "Stopped corpse view!"},
-            {"Start", "Started corpse view!"},
+            {"Stop", "Stopped corpse view! "},
+            {"Start", "Started corpse view {0} corpses!"},
             {"Permission", "You need permission to do that!"}
             }, this);
         }
@@ -57,7 +61,7 @@ namespace Oxide.Plugins
                     ServerMgr.Instance.StopCoroutine(_routine);
                 }
                 catch { }
-                _routine = null; 
+                _routine = null;
             }
         }
 
@@ -81,7 +85,7 @@ namespace Oxide.Plugins
         {
             if (entity != null && entity.name.Contains("player_corpse"))
             {
-                PlayerCorpse corpse = entity as PlayerCorpse;
+                PlayerCorpse corpse = entity as PlayerCorpse;             
                 if (corpse.health == 0) { return null; }
                 return false;
             }
@@ -92,8 +96,7 @@ namespace Oxide.Plugins
 
         #region Core
         bool isAdmin { get; set; }
-        private void DrawMarker(Color color, Vector3 position, string text){player.SendConsoleCommand("ddraw.text", RefreshTimer, color, position, $"<size=22>{text}</size>");}
-        private void BuildCorpseDict()
+        private void BuildCorpseDict(string Filter = "")
         {
             foreach (var entity in BaseNetworkable.serverEntities.OfType<BaseNetworkable>())
             {
@@ -102,14 +105,27 @@ namespace Oxide.Plugins
                     PlayerCorpse x = entity as PlayerCorpse;
                     if (x != null)
                     {
-                        Corpses.Add(entity, x.transform.position);
-                        continue;
+                        if (Filter == "")
+                        {
+                            Corpses.Add(entity, x.transform.position);
+                        }
+                        else
+                        {
+                            string name = x._playerName;
+                            if (name != null)
+                            {
+                                if (name.ToLower().Contains(Filter.ToLower()))
+                                {
+                                    Corpses.Add(entity, x.transform.position);
+                                }
+                            }
+                        }
                     }
                 }
             }
         }
 
-          private void ShowCorpses()
+        private void ShowCorpses()
         {
             try
             {
@@ -117,17 +133,17 @@ namespace Oxide.Plugins
                 {
                     PlayerCorpse corpse = ent.Key as PlayerCorpse;
                     if (corpse == null || corpse.transform == null) { continue; }
-                    DrawMarker(Color.red, corpse.transform.position + new Vector3(0f, 0.20f, 0f), string.Format("{0}", corpse.playerName));
+                    player.SendConsoleCommand("ddraw.text", RefreshTimer, textcolor, corpse.transform.position, "<size=" + textsize + ">"+corpse.playerName+"</size>");
                 }
             }
-            catch{}
+            catch { }
         }
 
         IEnumerator CorpseScanRoutine()
         {
             do
             {
-                if (!player || !player.IsConnected){yield break;}
+                if (!player || !player.IsConnected) { yield break; }
                 if (!isAdmin)
                 {
                     player.SetPlayerFlag(BasePlayer.PlayerFlags.IsAdmin, true);
@@ -145,46 +161,60 @@ namespace Oxide.Plugins
             _routine = null;
         }
 
-        [ChatCommand("cleancorpses")]
+        [ChatCommand("cleandead")]
         private void CmdCorpseClean(BasePlayer chatplayer, string command, string[] args)
         {
             if (chatplayer.IPlayer.HasPermission(permClean))
             {
                 Corpses.Clear();
-                BuildCorpseDict();
-                foreach (KeyValuePair<BaseNetworkable, Vector3> ent in Corpses){ent.Key.Kill();}
+                if (args.Length == 1) { BuildCorpseDict(args[0].ToString()); }
+                else { BuildCorpseDict(); }
+                foreach (KeyValuePair<BaseNetworkable, Vector3> ent in Corpses) 
+                {
+                    PlayerCorpse OldCorpse = ent.Key as PlayerCorpse;
+                    if (OldCorpse != null)
+                    {
+                        OldCorpse.health = 0f;
+                        OldCorpse.Kill();
+                    }
+                }
                 message(chatplayer, "Clean", Corpses.Count.ToString());
             }
             else { message(chatplayer, "Permission"); }
         }
-        [ChatCommand("viewcorpses")]
+        [ChatCommand("viewdead")]
         private void CmdCorpseView(BasePlayer chatplayer, string command, string[] args)
         {
             if (chatplayer.IPlayer.HasPermission(permView))
             {
-                isAdmin = chatplayer.IsAdmin;
-                player = chatplayer;
-                Corpses.Clear();
-                BuildCorpseDict();
                 if (_routine != null)
                 {
                     ServerMgr.Instance.StopCoroutine(_routine);
                     _routine = null;
-                    message(chatplayer, "Stop");
-                    return;
+                    if (args.Length == 0)
+                    {
+                        message(chatplayer, "Stop");
+                        return;
+                    }
                 }
-                _routine = ServerMgr.Instance.StartCoroutine(CorpseScanRoutine());
-                message(chatplayer, "Start");
+                isAdmin = chatplayer.IsAdmin;
+                player = chatplayer;
+                Corpses.Clear();
+                if (args.Length == 1) { BuildCorpseDict(args[0].ToString()); }
+                else { BuildCorpseDict(); }
+                    _routine = ServerMgr.Instance.StartCoroutine(CorpseScanRoutine());
+                    message(chatplayer, "Start", Corpses.Count.ToString());
             }
             else { message(chatplayer, "Permission"); }
         }
-        [ChatCommand("countcorpses")]
+        [ChatCommand("countdead")]
         private void CmdCorpseCount(BasePlayer chatplayer, string command, string[] args)
         {
             if (chatplayer.IPlayer.HasPermission(permCount))
             {
                 Corpses.Clear();
-                BuildCorpseDict();
+                if (args.Length == 1) { BuildCorpseDict(args[0].ToString()); }
+                else { BuildCorpseDict(); }
                 message(chatplayer, "Info", Corpses.Count.ToString());
             }
             else { message(chatplayer, "Permission"); }
