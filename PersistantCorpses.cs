@@ -5,13 +5,13 @@ using UnityEngine;
 
 namespace Oxide.Plugins
 {
-    [Info("Persistant Corpses", "bmgjet", "1.0.1")]
+    [Info("Persistant Corpses", "bmgjet", "1.0.2")]
     [Description("Player Corpses don't despawn unless there health is 0.")]
     public class PersistantCorpses : RustPlugin
     {
         #region Vars
         //User Editable
-        private float RefreshTimer = 6f;  
+        private float RefreshTimer = 6f;
         private int textsize = 22;
         private Color textcolor = Color.red;
         //Dont change below
@@ -85,7 +85,7 @@ namespace Oxide.Plugins
         {
             if (entity != null && entity.name.Contains("player_corpse"))
             {
-                PlayerCorpse corpse = entity as PlayerCorpse;             
+                PlayerCorpse corpse = entity as PlayerCorpse;
                 if (corpse.health == 0) { return null; }
                 return false;
             }
@@ -127,16 +127,16 @@ namespace Oxide.Plugins
 
         private void ShowCorpses()
         {
-            try
-            {
                 foreach (KeyValuePair<BaseNetworkable, Vector3> ent in Corpses)
                 {
-                    PlayerCorpse corpse = ent.Key as PlayerCorpse;
+                    try
+                    {
+                        PlayerCorpse corpse = ent.Key as PlayerCorpse;
                     if (corpse == null || corpse.transform == null) { continue; }
-                    player.SendConsoleCommand("ddraw.text", RefreshTimer, textcolor, corpse.transform.position, "<size=" + textsize + ">"+corpse.playerName+"</size>");
+                    player.SendConsoleCommand("ddraw.text", RefreshTimer, textcolor, corpse.transform.position, "<size=" + textsize + ">" + corpse.playerName + "</size>");
+                    }
+                    catch { }
                 }
-            }
-            catch { }
         }
 
         IEnumerator CorpseScanRoutine()
@@ -169,7 +169,7 @@ namespace Oxide.Plugins
                 Corpses.Clear();
                 if (args.Length == 1) { BuildCorpseDict(args[0].ToString()); }
                 else { BuildCorpseDict(); }
-                foreach (KeyValuePair<BaseNetworkable, Vector3> ent in Corpses) 
+                foreach (KeyValuePair<BaseNetworkable, Vector3> ent in Corpses)
                 {
                     PlayerCorpse OldCorpse = ent.Key as PlayerCorpse;
                     if (OldCorpse != null)
@@ -202,8 +202,8 @@ namespace Oxide.Plugins
                 Corpses.Clear();
                 if (args.Length == 1) { BuildCorpseDict(args[0].ToString()); }
                 else { BuildCorpseDict(); }
-                    _routine = ServerMgr.Instance.StartCoroutine(CorpseScanRoutine());
-                    message(chatplayer, "Start", Corpses.Count.ToString());
+                _routine = ServerMgr.Instance.StartCoroutine(CorpseScanRoutine());
+                message(chatplayer, "Start", Corpses.Count.ToString());
             }
             else { message(chatplayer, "Permission"); }
         }
