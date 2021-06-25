@@ -18,7 +18,7 @@ namespace Oxide.Plugins
         private const string permClean = "PersistantCorpses.clean";
         private const string permCount = "PersistantCorpses.count";
         private const string permView = "PersistantCorpses.view";
-        private BasePlayer player;
+        private Dictionary<BasePlayer, Dictionary<bool, string>> Viewers = new Dictionary<BasePlayer, Dictionary<bool, string>>();
         private Coroutine _routine;
         private Dictionary<BaseNetworkable, Vector3> Corpses = new Dictionary<BaseNetworkable, Vector3> { };
         #endregion
@@ -30,8 +30,7 @@ namespace Oxide.Plugins
             {
             {"Info", "There are {0} corpses on map!"},
             {"Clean", "{0} corpses have been removed from the map!"},
-            {"Stop", "Stopped corpse view! "},
-            {"Start", "Started corpse view {0} corpses!"},
+            {"View", "{0} Corpse view!"},
             {"Permission", "You need permission to do that!"}
             }, this);
         }
@@ -95,9 +94,32 @@ namespace Oxide.Plugins
         #endregion
 
         #region Core
-        bool isAdmin { get; set; }
-        private void BuildCorpseDict(string Filter = "")
+        private void CheckIfViewed()
         {
+            if (Viewers.Count == 0) //If no viewers left remove routine
+            {
+                ServerMgr.Instance.StopCoroutine(_routine);
+                _routine = null;
+                Puts("Corpse View Thread Stopped!");
+            }
+        }
+
+        private void CleanOut(Dictionary<BaseNetworkable, Vector3> co)
+        {
+            foreach (KeyValuePair<BaseNetworkable, Vector3> ent in co.ToList())
+            {
+                PlayerCorpse OldCorpse = ent.Key as PlayerCorpse;
+                if (OldCorpse != null)
+                {
+                    OldCorpse.health = 0f;
+                    OldCorpse.Kill();
+                }
+            }
+        }
+
+        private void BuildCorpseDict()
+        {
+            Corpses.Clear();
             foreach (var entity in BaseNetworkable.serverEntities.OfType<BaseNetworkable>())
             {
                 if (!Corpses.ContainsKey(entity))
@@ -105,119 +127,179 @@ namespace Oxide.Plugins
                     PlayerCorpse x = entity as PlayerCorpse;
                     if (x != null)
                     {
-                        if (Filter == "")
-                        {
                             Corpses.Add(entity, x.transform.position);
-                        }
-                        else
-                        {
-                            string name = x._playerName;
-                            if (name != null)
-                            {
-                                if (name.ToLower().Contains(Filter.ToLower()))
-                                {
-                                    Corpses.Add(entity, x.transform.position);
-                                }
-                            }
-                        }
                     }
                 }
             }
         }
 
-        private void ShowCorpses()
+        private void ShowCorpses(BasePlayer viewplayer, string filter)
         {
-                foreach (KeyValuePair<BaseNetworkable, Vector3> ent in Corpses)
+            foreach (KeyValuePair<BaseNetworkable, Vector3> ent in Corpses)
+            {
+                try
                 {
-                    try
-                    {
-                        PlayerCorpse corpse = ent.Key as PlayerCorpse;
+                    PlayerCorpse corpse = ent.Key as PlayerCorpse;
                     if (corpse == null || corpse.transform == null) { continue; }
-                    player.SendConsoleCommand("ddraw.text", RefreshTimer, textcolor, corpse.transform.position, "<size=" + textsize + ">" + corpse.playerName + "</size>");
+                    if (corpse.playerName.ToLower().Contains(filter.ToLower()) || filter == "")
+                    {
+                        viewplayer.SendConsoleCommand("ddraw.text", RefreshTimer, textcolor, corpse.transform.position, "<size=" + textsize + ">" + corpse.playerName + "</size>");
                     }
-                    catch { }
                 }
+                catch { }
+            }
         }
 
-        IEnumerator CorpseScanRoutine()
+        IEnumerator SafeSpaceScanRoutine()
         {
-            do
+            do //start loop
             {
-                if (!player || !player.IsConnected) { yield break; }
-                if (!isAdmin)
+                foreach (KeyValuePair<BasePlayer, Dictionary<bool, string>> viewer in Viewers.ToList())
                 {
-                    player.SetPlayerFlag(BasePlayer.PlayerFlags.IsAdmin, true);
-                    player.SendNetworkUpdateImmediate();
-                }
-                ShowCorpses();
-                if (!isAdmin && player.HasPlayerFlag(BasePlayer.PlayerFlags.IsAdmin))
-                {
-                    player.SetPlayerFlag(BasePlayer.PlayerFlags.IsAdmin, false);
-                    player.SendNetworkUpdateImmediate();
+                    foreach (KeyValuePair<bool, string> viewerinfo in viewer.Value.ToList())
+                    {
+                        //toggle admin flag so you can show a normal user with out it auto banning them for cheating
+                        if (!viewerinfo.Key)
+                        {
+                            viewer.Key.SetPlayerFlag(BasePlayer.PlayerFlags.IsAdmin, true);
+                            viewer.Key.SendNetworkUpdateImmediate();
+                        }
+                        ShowCorpses(viewer.Key,viewerinfo.Value);
+
+                        if (!viewerinfo.Key && viewer.Key.HasPlayerFlag(BasePlayer.PlayerFlags.IsAdmin))
+                        {
+                            viewer.Key.SetPlayerFlag(BasePlayer.PlayerFlags.IsAdmin, false);
+                            viewer.Key.SendNetworkUpdateImmediate();
+                        }
+                    }
+                    if (!viewer.Key.IsConnected || viewer.Key.IsSleeping())
+                    {
+                        //Remove from viewers list
+                        Viewers.Remove(viewer.Key);
+                        message(viewer.Key, "View", "Stopped");
+                    }
                 }
                 yield return CoroutineEx.waitForSeconds(RefreshTimer);
-            } while (player.IsValid() && player.IsConnected && !player.IsSleeping());
-            message(player, "Stop");
+            } while (Viewers.Count != 0);
             _routine = null;
+            Puts("Corpse View Thread Stopped!");
         }
 
-        [ChatCommand("cleandead")]
-        private void CmdCorpseClean(BasePlayer chatplayer, string command, string[] args)
+        [ChatCommand("corpse.clean")]
+        private void CmdCorpseClean(BasePlayer player, string command, string[] args)
         {
-            if (chatplayer.IPlayer.HasPermission(permClean))
+            if (!player.IPlayer.HasPermission(permCount))
             {
-                Corpses.Clear();
-                if (args.Length == 1) { BuildCorpseDict(args[0].ToString()); }
-                else { BuildCorpseDict(); }
+                message(player, "Permission", "count");
+                return;
+            }
+            BuildCorpseDict();
+            if (args.Length == 0)
+            {
+                CleanOut(Corpses);
+                message(player, "Clean", Corpses.Count.ToString());
+                return;
+            }
+                Dictionary<BaseNetworkable, Vector3> CleanOutList = new Dictionary<BaseNetworkable, Vector3>();
                 foreach (KeyValuePair<BaseNetworkable, Vector3> ent in Corpses)
+                {
+                try
                 {
                     PlayerCorpse OldCorpse = ent.Key as PlayerCorpse;
                     if (OldCorpse != null)
                     {
-                        OldCorpse.health = 0f;
-                        OldCorpse.Kill();
+                        if (OldCorpse.playerName.ToLower().Contains(args[0].ToLower()))
+                        {
+                            CleanOutList.Add(ent.Key, ent.Value);
+                        }
                     }
                 }
-                message(chatplayer, "Clean", Corpses.Count.ToString());
-            }
-            else { message(chatplayer, "Permission"); }
+                catch { }
+                }
+            CleanOut(CleanOutList);
+            message(player, "Clean", CleanOutList.Count.ToString());
         }
-        [ChatCommand("viewdead")]
-        private void CmdCorpseView(BasePlayer chatplayer, string command, string[] args)
+
+        [ChatCommand("corpse.view")]
+        private void CmdCorpseView(BasePlayer player, string command, string[] args)
         {
-            if (chatplayer.IPlayer.HasPermission(permView))
+            if (!player.IPlayer.HasPermission(permView))
             {
-                if (_routine != null)
+                message(player, "Permission", "view");
+                return;
+            }
+
+            if (_routine != null) //Check if already running
+            {
+                if (args.Length == 0) //No Args passed
                 {
-                    ServerMgr.Instance.StopCoroutine(_routine);
-                    _routine = null;
-                    if (args.Length == 0)
+                    if (Viewers.ContainsKey(player))
                     {
-                        message(chatplayer, "Stop");
+                        Viewers.Remove(player); //Remove player from list
+                        message(player, "View", "Stopped");
+                        CheckIfViewed();
                         return;
                     }
                 }
-                isAdmin = chatplayer.IsAdmin;
-                player = chatplayer;
-                Corpses.Clear();
-                if (args.Length == 1) { BuildCorpseDict(args[0].ToString()); }
-                else { BuildCorpseDict(); }
-                _routine = ServerMgr.Instance.StartCoroutine(CorpseScanRoutine());
-                message(chatplayer, "Start", Corpses.Count.ToString());
+                CheckIfViewed();
             }
-            else { message(chatplayer, "Permission"); }
-        }
-        [ChatCommand("countdead")]
-        private void CmdCorpseCount(BasePlayer chatplayer, string command, string[] args)
-        {
-            if (chatplayer.IPlayer.HasPermission(permCount))
+            if (args.Length > 0) //args passed
             {
-                Corpses.Clear();
-                if (args.Length == 1) { BuildCorpseDict(args[0].ToString()); }
-                else { BuildCorpseDict(); }
-                message(chatplayer, "Info", Corpses.Count.ToString());
+                if (Viewers.ContainsKey(player)) //Updates filter on player
+                {
+                    Viewers[player] = new Dictionary<bool, string> { { player.IsAdmin, args[0] } };
+                }
+                else
+                {
+                    Viewers.Add(player, new Dictionary<bool, string> { { player.IsAdmin, args[0] } }); //Filter "" = all players
+                }
+                message(player, "View", "Started filtered");
             }
-            else { message(chatplayer, "Permission"); }
+            else
+            {
+                Viewers.Add(player, new Dictionary<bool, string> { { player.IsAdmin, "" } }); //Filter "" = all players
+                message(player, "View", "Started");
+            }
+            BuildCorpseDict();
+            if (_routine == null) //Start routine
+            {
+                Puts("Corpse View Thread Started");
+                _routine = ServerMgr.Instance.StartCoroutine(SafeSpaceScanRoutine());
+            }
+        }
+
+        [ChatCommand("corpse.count")]
+        private void CmdCorpseCount(BasePlayer player, string command, string[] args)
+        {
+            if (!player.IPlayer.HasPermission(permCount))
+            {
+                message(player, "Permission", "count");
+                return;
+            }
+
+            BuildCorpseDict();
+            if (args.Length == 0)
+            {
+                message(player, "Info", Corpses.Count.ToString());
+                return;
+            }
+            int i = 0;
+            foreach (KeyValuePair<BaseNetworkable, Vector3> ent in Corpses)
+            {
+                try
+                {
+                    PlayerCorpse OldCorpse = ent.Key as PlayerCorpse;
+                    if (OldCorpse != null)
+                    {
+                        if (OldCorpse.playerName.ToLower().Contains(args[0].ToLower()))
+                        {
+                            i++;
+                        }
+                    }
+                }
+                catch { }
+            }
+            message(player, "Info", i.ToString());
         }
         #endregion
     }
