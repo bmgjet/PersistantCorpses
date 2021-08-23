@@ -12,14 +12,19 @@ namespace Oxide.Plugins
         #region Vars
         //User Editable
         private float RefreshTimer = 6f;
+        private bool NPCSupport = false;
         private int textsize = 22;
         private Color textcolor = Color.red;
+        private bool stripitems = false;
+        private int scorelimit = 10;
         //Dont change below
         private const string permClean = "PersistantCorpses.clean";
         private const string permCount = "PersistantCorpses.count";
+        private const string permScore = "PersistantCorpses.score";
         private const string permView = "PersistantCorpses.view";
         private Dictionary<BasePlayer, Dictionary<bool, string>> Viewers = new Dictionary<BasePlayer, Dictionary<bool, string>>();
         private Coroutine _routine;
+        private Dictionary<string, int> Score = new Dictionary<string, int> { };
         private Dictionary<BaseNetworkable, Vector3> Corpses = new Dictionary<BaseNetworkable, Vector3> { };
         #endregion
 
@@ -29,6 +34,7 @@ namespace Oxide.Plugins
             lang.RegisterMessages(new Dictionary<string, string>
             {
             {"Info", "There are {0} corpses on map!"},
+            {"Score", "Players Deaths {0}"},
             {"Clean", "{0} corpses have been removed from the map!"},
             {"View", "{0} Corpse view!"},
             {"Permission", "You need permission to do that!"}
@@ -49,6 +55,7 @@ namespace Oxide.Plugins
             permission.RegisterPermission(permClean, this);
             permission.RegisterPermission(permCount, this);
             permission.RegisterPermission(permView, this);
+            permission.RegisterPermission(permScore, this);
         }
 
         private void Unload()
@@ -66,7 +73,7 @@ namespace Oxide.Plugins
 
         private void OnEntitySpawned(BaseNetworkable entity)
         {
-            if (entity != null && entity.name.Contains("player_corpse"))
+            if (entity != null && (entity.name.Contains("player_corpse") || entity.name.Contains("scientist_corpse")))
             {
                 PlayerCorpse corpse = entity as PlayerCorpse;
                 if (corpse != null)
@@ -75,6 +82,18 @@ namespace Oxide.Plugins
                     if (moddedpayer != null)
                     {
                         corpse._playerName = "[" + moddedpayer.lastDamage.ToString() + "]" + corpse._playerName.ToString();
+                        if (stripitems)
+                        {
+                            corpse.DropItems();
+                        }
+                    }
+                    else
+                    {
+                        //bot
+                        if (stripitems && NPCSupport)
+                        {
+                            corpse.DropItems();
+                        }
                     }
                 }
             }
@@ -82,8 +101,9 @@ namespace Oxide.Plugins
 
         private object OnEntityKill(BaseNetworkable entity)
         {
-            if (entity != null && entity.name.Contains("player_corpse"))
+            if (entity != null && (entity.name.Contains("player_corpse") || entity.name.Contains("scientist_corpse")))
             {
+                if (entity.name.Contains("scientist_corpse") && !NPCSupport) { return null; }
                 PlayerCorpse corpse = entity as PlayerCorpse;
                 if (corpse.health == 0) { return null; }
                 return false;
@@ -127,7 +147,7 @@ namespace Oxide.Plugins
                     PlayerCorpse x = entity as PlayerCorpse;
                     if (x != null)
                     {
-                            Corpses.Add(entity, x.transform.position);
+                        Corpses.Add(entity, x.transform.position);
                     }
                 }
             }
@@ -150,7 +170,7 @@ namespace Oxide.Plugins
             }
         }
 
-        IEnumerator SafeSpaceScanRoutine()
+        IEnumerator CorpseScanRoutine()
         {
             do //start loop
             {
@@ -164,7 +184,7 @@ namespace Oxide.Plugins
                             viewer.Key.SetPlayerFlag(BasePlayer.PlayerFlags.IsAdmin, true);
                             viewer.Key.SendNetworkUpdateImmediate();
                         }
-                        ShowCorpses(viewer.Key,viewerinfo.Value);
+                        ShowCorpses(viewer.Key, viewerinfo.Value);
 
                         if (!viewerinfo.Key && viewer.Key.HasPlayerFlag(BasePlayer.PlayerFlags.IsAdmin))
                         {
@@ -200,9 +220,9 @@ namespace Oxide.Plugins
                 message(player, "Clean", Corpses.Count.ToString());
                 return;
             }
-                Dictionary<BaseNetworkable, Vector3> CleanOutList = new Dictionary<BaseNetworkable, Vector3>();
-                foreach (KeyValuePair<BaseNetworkable, Vector3> ent in Corpses)
-                {
+            Dictionary<BaseNetworkable, Vector3> CleanOutList = new Dictionary<BaseNetworkable, Vector3>();
+            foreach (KeyValuePair<BaseNetworkable, Vector3> ent in Corpses)
+            {
                 try
                 {
                     PlayerCorpse OldCorpse = ent.Key as PlayerCorpse;
@@ -215,7 +235,7 @@ namespace Oxide.Plugins
                     }
                 }
                 catch { }
-                }
+            }
             CleanOut(CleanOutList);
             message(player, "Clean", CleanOutList.Count.ToString());
         }
@@ -264,7 +284,7 @@ namespace Oxide.Plugins
             if (_routine == null) //Start routine
             {
                 Puts("Corpse View Thread Started");
-                _routine = ServerMgr.Instance.StartCoroutine(SafeSpaceScanRoutine());
+                _routine = ServerMgr.Instance.StartCoroutine(CorpseScanRoutine());
             }
         }
 
@@ -300,6 +320,60 @@ namespace Oxide.Plugins
                 catch { }
             }
             message(player, "Info", i.ToString());
+        }
+
+        [ChatCommand("corpse.score")]
+        private void CmdCorpseScore(BasePlayer player, string command, string[] args)
+        {
+            if (!player.IPlayer.HasPermission(permScore))
+            {
+                message(player, "Permission", "score");
+                return;
+            }
+
+            BuildCorpseDict();
+            Score.Clear();
+            foreach (KeyValuePair<BaseNetworkable, Vector3> ent in Corpses)
+            {
+
+                PlayerCorpse OldCorpse = ent.Key as PlayerCorpse;
+                if (OldCorpse != null)
+                {
+                    try
+                    {
+                        if (!Score.ContainsKey(OldCorpse.playerSteamID.ToString()))
+                        {
+                            if (OldCorpse.playerSteamID != 0)
+                                Score.Add(OldCorpse.playerSteamID.ToString(), 1);
+                            continue;
+                        }
+                        Score[OldCorpse.playerSteamID.ToString()]++;
+                        continue;
+                    }
+                    catch { }
+                }
+            }
+            string output = "\n";
+
+            var orderByDescendingResult = from s in Score
+                                          orderby s.Value descending
+                                          select s;
+
+            int sl = 0;
+            foreach (KeyValuePair<string, int> o in orderByDescendingResult)
+            {
+                if (sl > scorelimit)
+                {
+                    break;
+                }
+                BasePlayer dead = BasePlayer.FindAwakeOrSleeping(o.Key.ToString());
+                if (dead != null)
+                {
+                    output += dead.displayName + " Died " + o.Value.ToString() + " Times\n";
+                    sl++;
+                }
+            }
+            message(player, "Score", output);
         }
         #endregion
     }
